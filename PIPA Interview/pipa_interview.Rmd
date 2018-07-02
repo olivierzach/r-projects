@@ -1,0 +1,366 @@
+---
+title: "PIPA_Interview"
+author: "Zach Olivier"
+date: "7/1/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+## Executive Summary
+
+All analysis of the PIPA Customer Score test data set are contained in this document. This document covers all steps including importing data, handling missing values, exploratory data analysis, experiment design, model training and prediction.
+
+Here are the high level results of the analysis:
+
+        - Data strucutre is a standard tidy dataset with numeric and categorical factors
+        - Analysis shows Activity and Days Since Last Sale were the most correlated features to Customer Score
+        - Results of a interpret-able linear regression show all except Customer Sales factors were significant 
+        - Exploratory analysis showed counter-intuitively that negative Activity changes led to high Customer Scores
+        - Missing data was handled through imputation
+        - Training data was split into random subset of 75% for training and 25% for testing
+        - All models were evaluated using 10-fold cross validation
+        - I am confident in my  predictions - the final hold out set validation closely mirrored cross validation
+
+
+<br>
+
+### Import Data
+
+Steps to import the data and format column names, data types, and inspect missing data points are listed below. The result is a clean data frame that will allow for quick exploratory analysis, first approximation inference and predictive modeling. 
+
+
+
+```{r import, message=FALSE, warning=FALSE, fig.align='center'}
+
+# load packages for analysis
+pacman::p_load(caret, tidyverse, mice, VIM, doParallel, scales, lubridate, GGally, ggthemes, modelr)
+
+
+# read in data and format column names
+training <- read.table(
+        '/Users/zacholivier/Desktop/DS/PIPA Interview/training.dat', 
+        header = F, fill = T, skip = 6, stringsAsFactors = F) %>% 
+        as_tibble() %>% 
+        rename(
+                'CUSTOMER_SALES' = V1,
+                'ACTIVITY_CHANGE' = V2,
+                'DAYS_SINCE_FIRST_SALE' = V3,
+                'CUSTOMER_TYPE' = V4, 
+                'CUSTOMER_GENDER' = V5,
+                'CUSTOMER_SCORE' = V6
+                ) %>% 
+        dplyr::select(
+                CUSTOMER_SCORE, CUSTOMER_SALES, ACTIVITY_CHANGE, DAYS_SINCE_FIRST_SALE, 
+                CUSTOMER_TYPE, CUSTOMER_GENDER
+                ) %>% 
+        mutate_at(2:4, as.numeric,
+                  -1:-4, as.character) %>% 
+        mutate(
+                CUSTOMER_GENDER = ifelse(CUSTOMER_GENDER == "", NA, CUSTOMER_GENDER),
+                CUSTOMER_TYPE = ifelse(CUSTOMER_TYPE == "", NA, CUSTOMER_TYPE)
+        ) %>% 
+        rownames_to_column()
+
+str(training)
+
+
+```
+
+
+<br>
+
+### Handling Missing Values
+
+**All columns are effected by a slight amount of missing values. CUSTOMER_SALES has around 5% missing values and CUSTOMER_GENDER has less than 1% missing values. These missing values are small enough to be imputed. I also noticed a single row that looked like a data entry error and choose to exclude it completely from the dataset.** 
+
+To impute the remaining missing values I will take advantage of the MICE package and use the predictive mean matching method to fill in the numeric and use the mode to impute categorical missing values. 
+
+
+```{r missing, message=FALSE, warning=FALSE, fig.align='center'}
+
+# confirm missing values and where
+aggr(training, prop = T,  plot = T, sortVars = T)
+
+
+
+# impute missing values - weighted predictive mean matching for numeric
+missing_df <- training[-91,] %>% 
+        mice(., m = 5, maxit = 5, method = 'midastouch')
+
+# find mode for categorical variables
+table(training$CUSTOMER_GENDER)
+table(training$CUSTOMER_TYPE)
+
+# apply imputation back onto training dataset
+training_df <- complete(missing_df) %>% 
+        mutate(
+                CUSTOMER_TYPE = ifelse(is.na(CUSTOMER_TYPE), 'Adult', CUSTOMER_TYPE),
+                CUSTOMER_GENDER = ifelse(is.na(CUSTOMER_GENDER), 'Male', CUSTOMER_GENDER)
+        )
+
+
+# confirm imputation
+colMeans(is.na(training_df)) %>% as.data.frame()
+
+str(training_df)
+
+
+```
+
+<br>
+
+### Exploratory Data Analysis
+
+Below are my quick attempts of exploratory data analysis on the customer score data set. I noticed these key observations:
+
+        - Customer Score is heavily left tailed
+        - Activity Change is negatively correlated with Customer Score (-.4)
+        - Days Since First Sale is positively correlated with CUstomer Score (+.3)
+        - There appears to be no inter-correlation between predictors
+        - Senior has the highest mean Customer Score, but all Customer Types are grouped relatively close
+        - Females actually recieve a higher mean Customer score relative to males
+        - The negative correlation between Customer Score and Activity may be influenced by outliers
+        
+Overall it looks like positive increases in Activity Change will result in lower Customer Scores. This is counter-intuitive to me, but eyeballing the scatter plot and removing the possible Customer Score outliers does not seem to provide a positive correlation. 
+
+**Based on this exploratory analysis Activity Change and Days Since First Sale, and Gender may be the most important predictors of Customer Score.** 
+        
+
+
+```{r eda, message=FALSE, warning=FALSE, fig.align='center'}
+
+# distribution of customer score
+training_df %>% 
+        ggplot() +
+        geom_density(aes(x = CUSTOMER_SCORE)) +
+        geom_vline(xintercept = median(training_df$CUSTOMER_SCORE), linetype = 'dashed', 
+                                       color = 'red') +
+        theme_few() +
+        labs(title = 'Customer Score Distribution',
+             subtitle = 'PIPA Interview Customer Test Data')
+
+
+# correlation plot of numeric predictors
+GGally::ggcorr(training_df[,] %>%
+                       rename('DAYS' = DAYS_SINCE_FIRST_SALE, 'Score' = CUSTOMER_SCORE),
+               label = T, 
+               label_size = 4, 
+               geom = 'tile')
+
+
+# exploration of categorical predictors - customer type
+training_df %>% 
+        ggplot() +
+        geom_boxplot(aes(x = CUSTOMER_TYPE, y = CUSTOMER_SCORE, color = CUSTOMER_TYPE)) +
+        theme_few() +
+        labs(title = 'Customer Score by Customer Type',
+             subtitle = 'PIPA Interview Customer Test Data')
+
+# exploration of categorical predictors - customer gender
+training_df %>% 
+        ggplot() +
+        geom_boxplot(aes(x = CUSTOMER_GENDER, y = CUSTOMER_SCORE, color = CUSTOMER_GENDER)) +
+        theme_few() +
+        labs(title = 'Customer Score by Customer Gender',
+             subtitle = 'PIPA Interview Customer Test Data')
+
+
+
+
+# exploration of score vs. activity
+training_df %>% 
+        ggplot(aes(x = ACTIVITY_CHANGE, y = CUSTOMER_SCORE)) +
+        geom_point() +
+        geom_smooth(method = 'lm') +
+        theme_few() +
+        labs(title = 'Customer Score vs Activity Change',
+             subtitle = 'PIPA Interview Customer Test Data')
+
+
+
+
+# correlation pairs plot of all predictors
+GGally::ggpairs(training_df[,-1] %>% 
+                        rename(
+                        'Score' = CUSTOMER_SCORE, 
+                        'Sales' = CUSTOMER_SALES,
+                        'Activity' = ACTIVITY_CHANGE,
+                        'Days' = DAYS_SINCE_FIRST_SALE,
+                        'Type' = CUSTOMER_TYPE,
+                        'Gender' = CUSTOMER_GENDER
+                        ),
+                title = 'Pairs Plot of Customer Score Data',
+                mapping = ggplot2::aes(color = Type),
+                upper = list(continous = 'density', combo = 'box_no_facet'))
+
+
+
+
+
+```
+
+<br>
+
+### Predictive Modeling
+
+Goal of this section is to fit two types of models, one for interpret-able inference, and one for pure predictive power. Both will be validated using 10-fold cross validation. Once final models are training, I will apply them each to the held out data to analyze the results. 
+
+I iterated through three easily interpret-able linear regression models to determine a good mix of variables to include via cross validation. The linear regression of Customer Score onto Activity, Days since first sale, customer type, customer gender and the interaction between Activity and Days since first sale resulted in the "best" model. Each coefficient is interpret-able as that variables effect on Customer Score. 
+
+Linear Regression breaks down when the true form of the underlying data is not linear and / or the residuals are not constant. I noticed some heavy tailing in the Q-Q plot of my best regression model - this suggests that a more flexible model could give us better prediction results. 
+
+**Random Forest is a classic non-parametric model that does not rely on linear assumptions. As expected - the random forest performed well versus our linear regression. The best tuned (via cross validation) random forest model achieved .62 RMSE and .78 RSquared values compared to .82 RMSE and .62 RSquared of our linear model.** 
+
+Based on these results I will apply the random forest model (with tree depth parameter of 4) back onto the held out data to gauge one final check of the model's performance. 
+
+        - Mean Absolute Error is .33 on the test data set very strong predictive results
+        - Residuals show one large outlier in MAE
+        - More investigation into this outlier could result in even better performance
+        
+        
+Last step will be to predict onto the "answer-less" data provided. Results are printed at end of the document. Overall I am confident in the results of the predictions. The fall back of using a random forest model is the lack of intuitive understanding that we normally receive from linear regression. I framed this problem purely as a prediction problem, but would have chosen a different model if the goal was to interpret the predictions to drive business value. 
+
+
+
+```{r preds, message=FALSE, warning=FALSE, fig.align='center'}
+
+# pre-process data = transform data 
+(process <- preProcess(
+        training_df %>% dplyr::select(., -CUSTOMER_SCORE), 
+        method = c('center', 'scale', 'nzv', 'BoxCox')
+        )
+)
+
+process$method
+
+# apply pre-processing steps back onto original data frame
+score_mod <- predict(process, training_df)
+
+
+# set up experiment design
+partition <- createDataPartition(
+        score_mod$CUSTOMER_SCORE, 
+        p = .75, 
+        list = F
+)
+
+# develop training and test datasets
+train <- score_mod[partition,]
+test <- score_mod[-partition,]
+
+# check splits
+dim(train);dim(test)
+
+
+# set up training control for 10 fold cv
+tc <- trainControl(method = 'cv', number = 10)
+
+
+set.seed(70)
+
+# fit iterpretable model - simple linear regression on key correlated variables
+lm_mod3 <- train(
+        CUSTOMER_SCORE ~ ACTIVITY_CHANGE + DAYS_SINCE_FIRST_SALE
+        + CUSTOMER_TYPE + CUSTOMER_GENDER + ACTIVITY_CHANGE*DAYS_SINCE_FIRST_SALE,
+        data = train,
+        method = 'lm',
+        metric = 'RMSE',
+        trControl = tc
+)
+
+# view summary of model 
+summary(lm_mod3)
+plot(lm_mod3$finalModel)
+
+
+
+set.seed(45)
+
+# fit flexible model - random forest on all variables
+(rf_mod3 <- train(
+        CUSTOMER_SCORE ~ ACTIVITY_CHANGE + DAYS_SINCE_FIRST_SALE
+        + CUSTOMER_TYPE + CUSTOMER_GENDER + CUSTOMER_SALES,
+        data = train,
+        method = 'rf',
+        metric = 'RMSE',
+        trControl = tc
+        )
+)
+
+# look at tuning of the tree depth parameter
+plot(rf_mod3$finalModel)
+
+
+# predict best model onto test data
+rf_pred <- predict(
+        rf_mod3, 
+        test %>% dplyr::select(
+                ACTIVITY_CHANGE, DAYS_SINCE_FIRST_SALE, CUSTOMER_TYPE,
+                CUSTOMER_GENDER, CUSTOMER_SALES
+                )
+        ) 
+
+# look at performance of held out data - we know the answers 
+performance <- test %>% 
+        add_predictions(rf_mod3) %>% 
+        mutate(ABS_ERROR = abs(pred - CUSTOMER_SCORE))
+
+# plot of absoulte error by test prediction
+performance %>% 
+        ggplot(aes(x = CUSTOMER_SCORE, y = ABS_ERROR, color = ABS_ERROR)) +
+        geom_point() +
+        theme_few() + 
+        labs(title = 'Performance of Random Forest on Customer Score Data',
+             subtitle = 'Absoulte Error by Test Set Observation') +
+        theme(legend.position = 'none')
+
+
+
+# performance on held out test set
+print(paste('Random Forest MAE on Test Set: ', mean(performance$ABS_ERROR)))
+
+
+ 
+# read in the prediction data and format column names
+new_preds <- read.table(
+        '/Users/zacholivier/Desktop/DS/PIPA Interview/new_customers.dat', 
+        header = F, fill = T,  stringsAsFactors = F) %>% 
+        as.data.frame() %>% 
+        rename(
+                'CUSTOMER_SALES' = V1,
+                'ACTIVITY_CHANGE' = V2,
+                'DAYS_SINCE_FIRST_SALE' = V3,
+                'CUSTOMER_TYPE' = V4, 
+                'CUSTOMER_GENDER' = V5
+                ) %>% 
+        dplyr::select(
+                CUSTOMER_SALES, ACTIVITY_CHANGE, DAYS_SINCE_FIRST_SALE, 
+                CUSTOMER_TYPE, CUSTOMER_GENDER
+                ) %>% 
+        mutate_at(1:3, as.numeric,
+                  -1:-3, as.character) %>% 
+        mutate(
+                CUSTOMER_GENDER = ifelse(CUSTOMER_GENDER == "", NA, CUSTOMER_GENDER),
+                CUSTOMER_TYPE = ifelse(CUSTOMER_TYPE == "", NA, CUSTOMER_TYPE)
+        )
+
+# apply random forest model to new data (after pre-processing) and output results
+(rf_pred_new <- predict(process, new_preds) %>% 
+        add_predictions(rf_mod3) %>% 
+        dplyr::select('PREDICTED_CUSTOMER_SCORE' = pred,
+                      CUSTOMER_SALES, ACTIVITY_CHANGE, DAYS_SINCE_FIRST_SALE,CUSTOMER_TYPE,
+                      CUSTOMER_GENDER)
+        )
+
+
+
+
+
+
+
+```
