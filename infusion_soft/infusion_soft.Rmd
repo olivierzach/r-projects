@@ -1,0 +1,411 @@
+---
+title: "infusionsoft_interview"
+author: "Zach Olivier"
+date: "July 26, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+## Summary
+
+All analysis of the InfusionSoft Loan test data set are contained in this document. This document covers all steps including importing data, handling missing values, exploratory data analysis, experiment design, model training and prediction.
+
+
+
+<br>
+
+### Import Data
+
+Steps to import the data and format column names, data types, and inspect missing data points are listed below. The result is a clean data frame that will allow for quick exploratory analysis, first approximation inference and then predictive modeling. 
+
+There were 5 columns with 100% NA values - these will be dropped for exploratory data analysis. The factor variable loan status was converted to a binary repsonse indicating if the customer defaulted or paid. The data was also filtered to separate the current loans. 
+
+
+
+```{r import, message=FALSE, warning=FALSE, fig.align='center'}
+
+# workflow ------------------------------------------------------------------------------------
+
+# load libraries
+pacman::p_load(
+  tidyverse, data.table, caret, mice,
+  VIM, tictoc, modelr, GGally, readxl,
+  xlsx, openxlsx, broom, corrplot
+  )
+
+options(scipen=999)
+
+
+# import data ---------------------------------------------------------------------------------
+
+# read in the large loan dataset from excel
+# df <- openxlsx::read.xlsx(
+#   "//mnao.net/home/zolivier/Desktop/LoadData15_16.xlsx",
+#   sheet = 1
+# )
+# save to Rds file for quicker recovery
+# save(df, file = '//mnao.net/home/zolivier/Desktop/loan_data.Rds')
+
+
+# load loan data frame 
+load('//mnao.net/home/zolivier/Desktop/loan_data.Rds')
+
+# view response distribution
+table(df$loan_status)
+
+
+# read in data and format columns and response variable
+(loan_df <- df %>% 
+  as_tibble() %>% 
+  filter(loan_status != 'Current') %>% 
+  mutate( # combines default and charged off together = at risk customers
+    response = ifelse(loan_status %in% c('Charged Off', 'Default'), 'Default','Paid')
+    ) %>% 
+  mutate_if(is.character, as.factor) %>%          
+  select_if( # remove columns with close to  100% NAs
+    function(x) {!mean(is.na(x)) > .9})
+  )
+
+dim(loan_df)
+
+# examine class balance
+mean(loan_df$response == 'Default')
+table(loan_df$response)
+
+
+
+  
+
+
+
+
+
+```
+
+
+<br>
+
+### Data Preparation
+
+The dataset needed some additional pre-processing to build a complete data frame for inference and modeling. I first removed columns with near zero variance - these are columns with the same one value for more than 95% of the entries. These columns will not add anything to our prediction efforts and may muddle inference. 
+
+Next, a few columns had a high amount of missing values. I did not want to arbitarily throw these out if they were correlated with our response. My thinking it that if these columns were highly correlated it may be worth it to cut down the rows to include instances with complete rows for these variables. 
+
+To profile these columns, I quickly ran multiple univariate logistic regression models to determine if any of the variables under consideration to be dropped have a large correlation with the response. Most variables estimates were very close to 0, showing they have no effect on the repsonse. Based on this quick analysis I decided to remove these columns. 
+
+
+```{r process,message=FALSE, warning=FALSE, fig.align='center' }
+
+
+set.seed(45)
+
+# pre-processing ------------------------------------------------------------------------------
+
+
+# remove columns that have near zero variance
+nzv <- nearZeroVar(loan_df)
+
+loan_df <- loan_df[,-nzv]
+
+dim(loan_df)
+
+
+
+# handling missing values ---------------------------------------------------------------------
+
+
+# profile missing values - will impute missing values less than 10% of column total
+(missing <- sapply(loan_df, function(x) mean(is.na(x))) %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  filter(. > .11) %>% 
+  arrange(-.)
+  )
+
+
+# get index of missing high missing values columns
+# too large to impute
+# may be worth it to keep if correlated with response
+check_missing <- which(colnames(loan_df) %in% as.list(missing$rowname)) %>% 
+  as.list()
+
+# empty list to store results of univarite models into
+glm_bag <- list()
+
+
+# define function to fit univariate models for each of high proportion of missing data
+# estimate close to 0 = confident to drop column - else may omit rows but keep column
+for (i in seq_along(check_missing)) {
+  
+  
+  glm_df <- loan_df %>% 
+    dplyr::select(check_missing[[i]], loan_status) %>% 
+    na.omit() %>% 
+    glm(
+    loan_status ~ ., 
+    data = ., 
+    family = 'binomial'
+  ) %>% 
+    tidy() %>% 
+    dplyr::select(term, estimate)
+  
+  # print(glm_df)
+  
+  glm_bag[[i]] <- glm_df
+  
+}
+
+
+# variable total_bal_il has a large negative effect on the response
+# this might be a variable worth keeping even if we have to cut down the number of rows
+glm_bag[[8]]
+
+
+# correlation check with the high missing value columns
+cor_missing <- loan_df %>% 
+  dplyr::select(
+    which(colnames(loan_df) %in% as.list(missing$rowname))
+    ) %>% 
+  na.omit() %>% 
+  cor()
+
+# check correlation between the high missing columns
+corrplot(cor_missing, type = 'upper', order = 'hclust', tl.col = 'black', tl.srt = 45, diag = F,
+         title = "Correlation Plot of High Missing Value columns", tl.cex = .6)
+
+
+# final data frame for EDA
+loan_eda <- loan_df %>% 
+  dplyr::select(
+    .,
+    -which(colnames(loan_df) %in% as.list(missing$rowname)),
+    -zip_code,
+    -emp_title,
+    -loan_status
+    ) 
+
+dim(loan_df)
+
+# data frame to be used for exploration - check missing - under 10% ok to impute for modeling
+sapply(loan_eda, function(x) mean(is.na(x))) %>% tidy()
+
+
+
+
+```
+
+
+
+<br>
+
+
+### Learning Paritions
+
+Now that we have a structured and well-defined data frame, we need to split it into learning paritions for inference and modeling. I will partition the data into a training set, a test set, and a validation set. All explortory data analysis, inference, and modeling will be performed on the training test. Different methods can we evaluated using cross validation and the test set. My final choice of model will be applied to the validation set. 
+
+
+```{r partition, message=FALSE, warning=FALSE, fig.align='center'}
+
+# clear workspace
+rm(df, loan_df, glm_df, glm_bag, missing, cor_missing, check_missing)
+
+# learning partitions -------------------------------------------------------------------------
+
+set.seed(456)
+
+# set up names and partition sizes
+partition = c(train = .6, test = .2, validation = .2)
+
+# split data set into train, test, validation
+loan_splits = sample(cut(
+  seq(nrow(loan_eda)), 
+  nrow(loan_eda)*cumsum(c(0,partition)),
+  labels = names(partition)
+))
+
+# fracture the loan df dataset
+dfs <- split(loan_eda, loan_splits)
+
+# check resuts 
+sapply(dfs, nrow) / nrow(loan_eda)
+dim(dfs$train)
+
+# convert to data frame for modeling
+# datasets will have response
+dfs <- map(dfs, as.data.frame)
+
+
+
+
+
+
+```
+
+
+
+
+
+### Exploratory Data Analysis
+
+This section reviews my process for manually exploring the dataset as well as implementing automated feature importance and variable selection for inference before modeling.  
+
+First I examine the variables correlated with each other to see if any stick out as going against my loan default intuition. Based on the correlation plot there are quite a few variables that are correlated with each other. 
+
+Next I tried out a Learning Vector Quantization (LVQ) model to estimate the variable importance of our features. This is a supervised classification algorithm that we can then calculate variable importance from. This model should give us insight into which variables are most related to our response. 
+
+
+ 
+
+
+```{r eda, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+
+# correlation eda -----------------------------------------------------------------------------
+
+
+str(dfs$train)
+
+# visually inspect correlation across all variables
+GGally::ggcorr(dfs$train, size = 2, hjust = 1)
+
+# extract higly correlated numeric variables
+c_matrix <- cor(dfs$train %>% dplyr::select_if(is.numeric) %>% na.omit())
+
+# caret's highly correlated function - gives index
+high_cor <- findCorrelation(c_matrix, cutoff = .5)
+
+# print highly correlated columns
+names(dfs$train[,high_cor])
+
+
+# LVQ model -----------------------------------------------------------------------------------
+
+# cross validation for LVQ model
+control <- trainControl(method = 'cv', number = 3)
+
+# lvq model - needed to randomly sample train for document to render
+lvq <- train(
+  response ~ ., 
+  data = dfs$train %>% na.omit() %>% sample_frac(., .15),
+  method = 'lvq',
+  trControl = control
+  )
+
+# grab variable importance
+var_importance <- varImp(lvq)
+
+# view results
+plot(var_importance)
+
+
+```
+
+<br>
+
+
+<br>
+
+### Predictive Modeling
+
+Goal of this section is to fit two types of models, one for interpret-able inference, and one for pure predictive power. Both will be validated cross validation. Once final models are training, I will apply them each to the held out data to analyze the results. All results will be evaluated using the Kappa metric, which is a estimate of our model's performance over the baseline accuracy of predicting the majority class. 
+
+
+
+
+```{r preds, message=FALSE, warning=FALSE, fig.align='center'}
+
+# parallel processing with caret --------------------------------------------------------------
+
+library(doParallel)
+
+cores <- detectCores()
+cl <- makeCluster(cores[1] - 1)
+registerDoParallel(cl)
+
+
+
+# model preprocessing -------------------------------------------------------------------------
+
+set.seed(854)
+
+# center, scale, and impute missing data for final model
+process <- preProcess(dfs$train, method = c('scale', 'knnImpute'))
+
+
+# apply transformations to both train and test datasets
+dfs$train <- predict(process, dfs$train)
+dfs$test <- predict(process, dfs$test)
+
+
+
+# interpretable model -------------------------------------------------------------------------
+
+# set up training controls
+control <- trainControl(method = 'cv', number = 3)
+
+set.seed(987)
+
+# fit simple logistic regression on most important variables from EDA
+glm_mod <- train(
+  response ~
+    total_rec_int +
+    num_bc_sats +
+    last_pymnt_d + 
+    inq_last_6mths +
+    total_pymnt + 
+    total_pymnt_inv + 
+    last_pymnt_amnt + 
+    total_acc,
+  method = 'glm',
+  family = 'binomial',
+  metric = 'Kappa',
+  data = dfs$train,
+  trControl = control
+)
+
+
+summary(glm_mod)
+
+
+
+glm_pred <- predict(glm_mod, newdata = dfs$test, type = 'response')
+
+
+# predictive model ----------------------------------------------------------------------------
+
+control <- trainControl(method = 'cv', number = 3)
+
+set.seed(987)
+
+# fit flexible model for pure prediction power
+rf_mod <- train(
+  response ~
+    total_rec_int +
+    num_bc_sats +
+    last_pymnt_d + 
+    inq_last_6mths +
+    total_pymnt + 
+    total_pymnt_inv + 
+    last_pymnt_amnt + 
+    total_acc,
+  method = 'rf',
+  metric = 'Kappa',
+  data = dfs$train,
+  trControl = control
+)
+
+summary(rf_mod)
+
+
+
+rf_pred <- predict(rf_mod, newdata = dfs$test, type = 'probs')
+
+
+
+```
