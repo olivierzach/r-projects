@@ -13,7 +13,11 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Summary
 
-All analysis of the InfusionSoft Loan test data set are contained in this document. This document covers all steps including importing data, handling missing values, exploratory data analysis, experiment design, model training and prediction.
+All analysis of the InfusionSoft Loan test data set are contained in this document. This document covers all steps including importing data, handling missing values, exploratory data analysis, experiment design, model training and prediction. 
+
+The results provide a snapshot into the most important factors in predictive customer loan default as well as a predictive model to score the current loan customers. 
+
+
 
 
 
@@ -23,7 +27,7 @@ All analysis of the InfusionSoft Loan test data set are contained in this docume
 
 Steps to import the data and format column names, data types, and inspect missing data points are listed below. The result is a clean data frame that will allow for quick exploratory analysis, first approximation inference and then predictive modeling. 
 
-There were 5 columns with 100% NA values - these will be dropped for exploratory data analysis. The factor variable loan status was converted to a binary repsonse indicating if the customer defaulted or paid. The data was also filtered to separate the current loans. 
+There were 5 columns with 100% NA values - these will be dropped for exploratory data analysis. The factor variable loan status was converted to a binary response indicating if the customer defaulted or paid. The data was also filtered to separate the current loans. 
 
 
 
@@ -33,9 +37,9 @@ There were 5 columns with 100% NA values - these will be dropped for exploratory
 
 # load libraries
 pacman::p_load(
-  tidyverse, data.table, caret, mice,
+  tidyverse, data.table, caret, 
   VIM, tictoc, modelr, GGally, readxl,
-  xlsx, openxlsx, broom, corrplot
+  xlsx, openxlsx, broom, corrplot, doParallel
   )
 
 options(scipen=999)
@@ -79,12 +83,6 @@ table(loan_df$response)
 
 
 
-  
-
-
-
-
-
 ```
 
 
@@ -92,11 +90,11 @@ table(loan_df$response)
 
 ### Data Preparation
 
-The dataset needed some additional pre-processing to build a complete data frame for inference and modeling. I first removed columns with near zero variance - these are columns with the same one value for more than 95% of the entries. These columns will not add anything to our prediction efforts and may muddle inference. 
+The data set needed some additional pre-processing to build a complete data frame for inference and modeling. I first removed columns with near zero variance - these are columns with the same one value for more than 95% of the entries. These columns will not add anything to our prediction efforts and may muddle inference. 
 
-Next, a few columns had a high amount of missing values. I did not want to arbitarily throw these out if they were correlated with our response. My thinking it that if these columns were highly correlated it may be worth it to cut down the rows to include instances with complete rows for these variables. 
+Next, a few columns had a high amount of missing values. I did not want to arbitrarily throw these out if they were correlated with our response. My thinking it that if these columns were highly correlated it may be worth it to cut down the rows to include instances with complete rows for these variables. 
 
-To profile these columns, I quickly ran multiple univariate logistic regression models to determine if any of the variables under consideration to be dropped have a large correlation with the response. Most variables estimates were very close to 0, showing they have no effect on the repsonse. Based on this quick analysis I decided to remove these columns. 
+To profile these columns, I quickly ran multiple uni-variate logistic regression models to determine if any of the variables under consideration to be dropped have a large correlation with the response. Most variables estimates were very close to 0, showing they have no effect on the response. Based on this quick analysis I decided to remove these columns. 
 
 
 ```{r process,message=FALSE, warning=FALSE, fig.align='center' }
@@ -206,7 +204,7 @@ sapply(loan_eda, function(x) mean(is.na(x))) %>% tidy()
 
 ### Learning Paritions
 
-Now that we have a structured and well-defined data frame, we need to split it into learning paritions for inference and modeling. I will partition the data into a training set, a test set, and a validation set. All explortory data analysis, inference, and modeling will be performed on the training test. Different methods can we evaluated using cross validation and the test set. My final choice of model will be applied to the validation set. 
+Now that we have a structured and well-defined data frame, we need to split it into learning partitions for inference and modeling. I will partition the data into a training set, a test set, and a validation set. All exploratory data analysis, inference, and modeling will be performed on the training test. Different methods can we evaluated using cross validation and the test set. My final choice of model will be applied to the validation set. 
 
 
 ```{r partition, message=FALSE, warning=FALSE, fig.align='center'}
@@ -252,7 +250,7 @@ dfs <- map(dfs, as.data.frame)
 
 ### Exploratory Data Analysis
 
-This section reviews my process for manually exploring the dataset as well as implementing automated feature importance and variable selection for inference before modeling.  
+This section reviews my process for manually exploring the data set as well as implementing automated feature importance and variable selection for inference before modeling.  
 
 First I examine the variables correlated with each other to see if any stick out as going against my loan default intuition. Based on the correlation plot there are quite a few variables that are correlated with each other. 
 
@@ -269,7 +267,7 @@ Next I tried out a Learning Vector Quantization (LVQ) model to estimate the vari
 # correlation eda -----------------------------------------------------------------------------
 
 
-str(dfs$train)
+# str(dfs$train)
 
 # visually inspect correlation across all variables
 GGally::ggcorr(dfs$train, size = 2, hjust = 1)
@@ -289,16 +287,17 @@ names(dfs$train[,high_cor])
 # cross validation for LVQ model
 control <- trainControl(method = 'cv', number = 3)
 
-# lvq model - needed to randomly sample train for document to render
+# lvq model - needed to randomly sample train to cut down on size fore presentation - not accurate
+# should be training model on the full training set 
 lvq <- train(
   response ~ ., 
-  data = dfs$train %>% na.omit() %>% sample_frac(., .15),
+  data = dfs$train %>% na.omit() %>% sample_frac(., .1),
   method = 'lvq',
   trControl = control
   )
 
 # grab variable importance
-var_importance <- varImp(lvq)
+(var_importance <- varImp(lvq))
 
 # view results
 plot(var_importance)
@@ -315,6 +314,12 @@ plot(var_importance)
 
 Goal of this section is to fit two types of models, one for interpret-able inference, and one for pure predictive power. Both will be validated cross validation. Once final models are training, I will apply them each to the held out data to analyze the results. All results will be evaluated using the Kappa metric, which is a estimate of our model's performance over the baseline accuracy of predicting the majority class. 
 
+The end result is a predictive model we can apply not only to the final validation set, but also the set of current loan holders to score them as a propensity to default. 
+
+Results were extremely positive for the simple generalized linear model and the random forest. These results are most likely be heavily biased by the limited rows used to build these models for presentation purposed. In practice I would should never cut down the number of rows to train our models on unless there was an absolute reason to. 
+
+Further exploratory data analysis and more robust modeling will be needed to make the final call on these predictive models.
+
 
 
 
@@ -322,7 +327,7 @@ Goal of this section is to fit two types of models, one for interpret-able infer
 
 # parallel processing with caret --------------------------------------------------------------
 
-library(doParallel)
+
 
 cores <- detectCores()
 cl <- makeCluster(cores[1] - 1)
@@ -339,72 +344,124 @@ process <- preProcess(dfs$train, method = c('scale', 'knnImpute'))
 
 
 # apply transformations to both train and test datasets
-dfs$train <- predict(process, dfs$train)
+dfs$train <- predict(process, dfs$train) 
 dfs$test <- predict(process, dfs$test)
+dfs$validation <- predict(process, dfs$validation)
 
+
+# three fold cv to cut down on time for presentation purposes - real cv could be 10 fold repeated 
+control <- trainControl(method = 'cv', number = 3, allowParallel=T)
 
 
 # interpretable model -------------------------------------------------------------------------
 
-# set up training controls
-control <- trainControl(method = 'cv', number = 3)
+
 
 set.seed(987)
 
 # fit simple logistic regression on most important variables from EDA
 glm_mod <- train(
   response ~
-    total_rec_int +
-    num_bc_sats +
-    last_pymnt_d + 
-    inq_last_6mths +
+    last_pymnt_amnt + 
+    total_rec_prncp +
     total_pymnt + 
     total_pymnt_inv + 
-    last_pymnt_amnt + 
-    total_acc,
+    collection_recovery_fee +
+    recoveries + 
+    int_rate    +
+    last_pymnt_d +
+    dti + 
+    bc_open_to_buy  + 
+    term +
+    revol_util +
+    bc_util +
+    percent_bc_gt_75 +
+    avg_cur_bal +
+    tot_hi_cred_lim +
+    mort_acc +
+    num_rev_tl_bal_gt_0 +
+    num_actv_rev_tl +
+    total_rec_int,
   method = 'glm',
   family = 'binomial',
   metric = 'Kappa',
-  data = dfs$train,
+  data = dfs$train %>% na.omit() %>% sample_frac(., .1),
   trControl = control
 )
 
+# check cv summary of glm model 
+glm_mod
+summary(glm_mod$finalModel)
 
-summary(glm_mod)
 
 
+# apply model to test data - set classification threshold at .5
+glm_pred <- predict(glm_mod, newdata = dfs$test %>% na.omit(), type = 'prob') %>% 
+  mutate(pred = ifelse(Paid >= .5, 'Paid', 'Default')) %>% 
+  mutate_if(is.character, as.factor)
 
-glm_pred <- predict(glm_mod, newdata = dfs$test, type = 'response')
+# add predictions to the test data set
+glm_test <- dfs$test %>% na.omit() %>% add_predictions(glm_mod)
+
+# view confusion matrix
+confusionMatrix(glm_test$pred, glm_test$response)
 
 
 # predictive model ----------------------------------------------------------------------------
 
-control <- trainControl(method = 'cv', number = 3)
-
 set.seed(987)
 
 # fit flexible model for pure prediction power
+# rf is non-parameteric and insensistive to scaling
 rf_mod <- train(
   response ~
-    total_rec_int +
-    num_bc_sats +
-    last_pymnt_d + 
-    inq_last_6mths +
+    last_pymnt_amnt + 
+    total_rec_prncp +
     total_pymnt + 
     total_pymnt_inv + 
-    last_pymnt_amnt + 
-    total_acc,
+    collection_recovery_fee +
+    recoveries + 
+    int_rate    +
+    last_pymnt_d +
+    dti + 
+    bc_open_to_buy  + 
+    term +
+    revol_util +
+    bc_util +
+    percent_bc_gt_75 +
+    avg_cur_bal +
+    tot_hi_cred_lim +
+    mort_acc +
+    num_rev_tl_bal_gt_0 +
+    num_actv_rev_tl +
+    total_rec_int,
   method = 'rf',
   metric = 'Kappa',
-  data = dfs$train,
+  data = dfs$train %>% na.omit() %>% sample_frac(., .1),
   trControl = control
 )
 
-summary(rf_mod)
+# check cv summary of rf model including best tuned parameters
+rf_mod$finalModel
+
+
+# apply model to test data - set classification threshold at .5
+rf_pred <- predict(rf_mod, newdata = dfs$test %>% na.omit(), type = 'prob') %>% 
+  mutate(pred = ifelse(Paid >= .5, 'Paid', 'Default')) %>% 
+  mutate_if(is.character, as.factor)
+
+# add predictions to the test data set
+rf_test <- dfs$test %>% na.omit() %>% add_predictions(rf_mod)
+
+# view confusion matrix
+confusionMatrix(rf_test$pred, rf_test$response)
 
 
 
-rf_pred <- predict(rf_mod, newdata = dfs$test, type = 'probs')
+
+
+
+
 
 
 
