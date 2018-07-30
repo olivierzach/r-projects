@@ -5,6 +5,8 @@
 # author: "Zach Olivier"
 # date: "July 26, 2018"
 
+# goal: import data, clean, pre-process, eda, model for inference, model for prediction
+
 
 
 
@@ -22,17 +24,20 @@ options(scipen=999)
 
 # import data ---------------------------------------------------------------------------------
 
+
 # read in the large loan dataset from excel
 # df <- openxlsx::read.xlsx(
-#   "//mnao.net/home/zolivier/Desktop/LoadData15_16.xlsx",
+#   "LoadData15_16.xlsx",
 #   sheet = 1
 # )
+
+
 # save to Rds file for quicker recovery
-# save(df, file = '//mnao.net/home/zolivier/Desktop/loan_data.Rds')
+# save(df, file = 'loan_data.Rds')
 
 
 # load loan data frame 
-load('//mnao.net/home/zolivier/Desktop/loan_data.Rds')
+load('loan_data.Rds')
 
 # view response distribution
 table(df$loan_status)

@@ -31,7 +31,7 @@ There were 5 columns with 100% NA values - these will be dropped for exploratory
 
 
 
-```{r import, message=FALSE, warning=FALSE, fig.align='center'}
+```{r import, message=FALSE, warning=FALSE, fig.align='center', eval=TRUE}
 
 # workflow ------------------------------------------------------------------------------------
 
@@ -49,15 +49,15 @@ options(scipen=999)
 
 # read in the large loan dataset from excel
 # df <- openxlsx::read.xlsx(
-#   "//mnao.net/home/zolivier/Desktop/LoadData15_16.xlsx",
+#   "LoadData15_16.xlsx",
 #   sheet = 1
 # )
 # save to Rds file for quicker recovery
-# save(df, file = '//mnao.net/home/zolivier/Desktop/loan_data.Rds')
+# save(df, file = 'loan_data.Rds')
 
 
 # load loan data frame 
-load('//mnao.net/home/zolivier/Desktop/loan_data.Rds')
+load('loan_data.Rds')
 
 # view response distribution
 table(df$loan_status)
@@ -97,7 +97,7 @@ Next, a few columns had a high amount of missing values. I did not want to arbit
 To profile these columns, I quickly ran multiple uni-variate logistic regression models to determine if any of the variables under consideration to be dropped have a large correlation with the response. Most variables estimates were very close to 0, showing they have no effect on the response. Based on this quick analysis I decided to remove these columns. 
 
 
-```{r process,message=FALSE, warning=FALSE, fig.align='center' }
+```{r process,message=FALSE, warning=FALSE, fig.align='center', , eval=TRUE }
 
 
 set.seed(45)
@@ -207,7 +207,7 @@ sapply(loan_eda, function(x) mean(is.na(x))) %>% tidy()
 Now that we have a structured and well-defined data frame, we need to split it into learning partitions for inference and modeling. I will partition the data into a training set, a test set, and a validation set. All exploratory data analysis, inference, and modeling will be performed on the training test. Different methods can we evaluated using cross validation and the test set. My final choice of model will be applied to the validation set. 
 
 
-```{r partition, message=FALSE, warning=FALSE, fig.align='center'}
+```{r partition, message=FALSE, warning=FALSE, fig.align='center', , eval=TRUE}
 
 # clear workspace
 rm(df, loan_df, glm_df, glm_bag, missing, cor_missing, check_missing)
@@ -260,7 +260,7 @@ Next I tried out a Learning Vector Quantization (LVQ) model to estimate the vari
  
 
 
-```{r eda, message=FALSE, warning=FALSE, fig.align='center'}
+```{r eda, message=FALSE, warning=FALSE, fig.align='center', , eval=TRUE}
 
 
 
@@ -281,7 +281,12 @@ high_cor <- findCorrelation(c_matrix, cutoff = .5)
 # print highly correlated columns
 names(dfs$train[,high_cor])
 
+```
 
+
+<br>
+
+```{r lvq, message=FALSE, warning=FALSE, fig.align='center', , eval=FALSE}
 # LVQ model -----------------------------------------------------------------------------------
 
 # cross validation for LVQ model
@@ -308,7 +313,7 @@ plot(var_importance)
 <br>
 
 
-<br>
+
 
 ### Predictive Modeling
 
@@ -323,7 +328,7 @@ Further exploratory data analysis and more robust modeling will be needed to mak
 
 
 
-```{r preds, message=FALSE, warning=FALSE, fig.align='center'}
+```{r preds, message=FALSE, warning=FALSE, fig.align='center', , eval=TRUE}
 
 # parallel processing with caret --------------------------------------------------------------
 
@@ -340,13 +345,13 @@ registerDoParallel(cl)
 set.seed(854)
 
 # center, scale, and impute missing data for final model
-process <- preProcess(dfs$train, method = c('scale', 'knnImpute'))
-
-
-# apply transformations to both train and test datasets
-dfs$train <- predict(process, dfs$train) 
-dfs$test <- predict(process, dfs$test)
-dfs$validation <- predict(process, dfs$validation)
+# process <- preProcess(dfs$train, method = c('scale', 'knnImpute'))
+# 
+# 
+# # apply transformations to both train and test datasets
+# dfs$train <- predict(process, dfs$train) 
+# dfs$test <- predict(process, dfs$test)
+# dfs$validation <- predict(process, dfs$validation)
 
 
 # three fold cv to cut down on time for presentation purposes - real cv could be 10 fold repeated 
